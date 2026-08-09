@@ -1,0 +1,72 @@
+{
+  "identifier": "run.vineyard.pluginpacks.vineyard_rdap",
+  "content_type": "vineyard:pluginpack",
+  "name": "Vineyard IP RDAP",
+  "version": "1.0.0",
+  "description": "IP allocation lookup through Vineyard's cached, normalized RDAP service: one shape across every RIR, KRNIC/JPNIC whois fallback where RDAP is not served, and a cache shared between analysts instead of each one spending their own registry rate limit.",
+  "author": {
+    "name": "vineyard-run",
+    "url": "https://github.com/vineyard-run"
+  },
+  "license": "Apache-2.0",
+  "icon": "boxes",
+  "platforms": {
+    "primary": "web",
+    "web": {
+      "runtime": "sandbox-js",
+      "entry": "dist/pack.mjs"
+    }
+  },
+  "plugins": [
+    {
+      "identifier": "run.vineyard.plugins.vineyard_rdap_ip",
+      "content_type": "vineyard:plugin",
+      "name": "Vineyard IP RDAP",
+      "version": "1.0.0",
+      "description": "Resolves each selected IP's allocation through Vineyard's cached RDAP service: adds the owning Netblock node (CIDR, netname, country) and fills the IP's organization and country. One shape across every registry, and a cache shared between analysts.",
+      "icon": "boxes",
+      "platforms": {
+        "primary": "web",
+        "web": {
+          "runtime": "sandbox-js",
+          "entry": "dist/pack.mjs"
+        }
+      },
+      "io": {
+        "consumes": [
+          {
+            "typepack": "run.vineyard.typepacks.infrastructure",
+            "category": "infrastructure",
+            "name": "ip_address"
+          }
+        ],
+        "produces": [
+          {
+            "typepack": "run.vineyard.typepacks.infrastructure",
+            "category": "infrastructure",
+            "name": "netblock"
+          }
+        ]
+      },
+      "scopes": {
+        "graph": [
+          "node:read",
+          "node:create",
+          "node:update",
+          "edge:create"
+        ],
+        "services": [
+          "rdap"
+        ]
+      },
+      "lifecycle": {
+        "persistence": "opt-in",
+        "controls": [
+          "progress",
+          "cancel"
+        ],
+        "progress": "determinate"
+      }
+    }
+  ]
+}
