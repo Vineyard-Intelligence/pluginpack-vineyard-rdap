@@ -101,18 +101,24 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
 
     const record = created[1];
     assert.equal(record.type, 'infrastructure.whois_record');
-    assert.equal(record.data.subject, '8.8.8.0/24', 'the record describes the BLOCK, not the address');
+    // `whois_record.subject` is declared as "the domain or IP this record describes (its identity)"
+    // and `has_whois` runs from a domain or ip_address. A CIDR is neither, and a netblock is not a
+    // permitted endpoint — the type is shared with domain WHOIS and a plugin does not get to
+    // reinterpret it.
+    assert.equal(record.data.subject, '8.8.8.8');
     assert.equal(record.data.registrant, 'Google LLC');
-    assert.equal(record.data.registrar, 'whois.arin.net');
     assert.equal(record.data.created_at, '2023-12-28T17:24:33-05:00', 'the registration event, not the last change');
+    // `registrar` means "sponsoring registrar", a domain concept. IP space has a REGISTRY, and
+    // `whois.arin.net` is a server name — the field stays empty rather than holding a wrong answer.
+    assert.equal('registrar' in record.data, false);
     // Everything without a field of its own survives here, minus the registry's verbatim copy.
     assert.match(record.data.raw, /DIRECT ALLOCATION/);
     assert.equal(/"raw"/.test(record.data.raw), false, 'the registry payload is not nested inside itself');
 
     assert.deepEqual(edges, [
-        { from: 'new-1', to: 'new-2', label: 'has whois' },
         { from: 'n1', to: 'new-1', label: 'within netblock' },
-    ]);
+        { from: 'n1', to: 'new-2', label: 'has whois' },
+    ], 'has_whois runs FROM the ip_address, which is what the edge type declares');
     assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'Google LLC', version: 'ipv4' } }]);
     assert.match(out.summary, /whois\.arin\.net/);
 }
@@ -163,7 +169,7 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.equal(created[0].data.network_name, 'KINX');
     assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'KINX', country_code: 'KR', version: 'ipv4' } }]);
     // KRNIC's IRT address serves every Korean block; the holder's technical contact is the useful one.
-    assert.equal(created[1].data.registrant_email, 'noc@kinx.net');
+    assert.equal(created.find((c) => c.type === 'infrastructure.whois_record').data.registrant_email, 'noc@kinx.net');
     assert.match(out.summary, /KRNIC/, 'the summary says which registry actually answered');
 }
 
@@ -193,8 +199,11 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     );
     await plugin.run(ctx);
     assert.equal(created.filter((c) => c.type === 'infrastructure.netblock').length, 1, 'the /24 is created once');
-    assert.equal(created.filter((c) => c.type === 'infrastructure.whois_record').length, 1, 'and so is its record');
     assert.equal(edges.filter((e) => e.label === 'within netblock').length, 2, 'both IPs link to it');
+    // One record PER SUBJECT, which for an IP record means per address. Honest duplication: the
+    // per-range view is the netblock, and this type is keyed by the thing it describes.
+    const subjects = created.filter((c) => c.type === 'infrastructure.whois_record').map((c) => c.data.subject);
+    assert.deepEqual(subjects, ['8.8.8.8', '8.8.8.9']);
 }
 
 // --- 5. A 401 stops the run and says why, rather than reporting an empty success ---------------

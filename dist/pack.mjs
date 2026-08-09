@@ -89,6 +89,12 @@ function originAsn(doc) {
     return first === undefined ? undefined : `AS${Number(first)}`;
 }
 
+// NOTE ON `registrar`: left empty on purpose. It means "sponsoring registrar", which is a domain
+// concept — IP space is allocated by a REGISTRY (an RIR, or an NIR beneath it), and there is no
+// registrar in the chain. Putting `whois.apnic.net` there would fill a field with a server name and
+// look like an answer. Which registry actually replied is in the `raw` copy (`source`) and in the
+// run summary.
+
 /** The date a registry says the allocation was made, ISO-ish, or undefined. */
 function registeredAt(doc, nir) {
     if (nir?.created) return String(nir.created);
@@ -140,7 +146,7 @@ const vineyardRdapIp = {
         identifier: 'run.vineyard.plugins.vineyard_rdap_ip',
         content_type: 'vineyard:plugin',
         name: 'Vineyard RDAP IP',
-        version: '1.2.0',
+        version: '1.3.0',
         description: "IP allocation lookup through Vineyard's cached RDAP service.",
         icon: 'boxes',
         author: { name: 'VINEYARD.RUN', url: 'https://vineyard.run' },
@@ -244,29 +250,36 @@ const vineyardRdapIp = {
                     });
                     netblockId = String(created.id);
                     netblocks.set(range, netblockId);
-
-                    // The registration record for the ALLOCATION, so it is created once per range
-                    // rather than once per address — an RDAP answer describes the block, not the
-                    // host. It is where the parts with no field of their own live: allocation type,
-                    // status, dates, the contact list, and the national-registry block.
-                    const registeredOn = registeredAt(doc, nir);
-                    const email = contactEmail(doc?.entities);
-                    const record = await ctx.graph.createNode({
-                        type: 'infrastructure.whois_record',
-                        data: {
-                            subject: range,
-                            ...(organization ? { registrant: organization } : {}),
-                            ...(email ? { registrant_email: email } : {}),
-                            ...(doc?.source ? { registrar: String(doc.source) } : {}),
-                            ...(registeredOn ? { created_at: registeredOn } : {}),
-                            raw: recordPayload(doc),
-                        },
-                    });
-                    await ctx.graph.createEdge({ from: netblockId, to: String(record.id), label: 'has whois' });
-                    records++;
                 }
                 await ctx.graph.createEdge({ from: selection[i], to: netblockId, label: 'within netblock' });
             }
+
+            // The registration record, keyed by the ADDRESS and hung off it.
+            //
+            // Not by CIDR, and not off the netblock, though both read as tidier: `whois_record`
+            // declares `subject` to be "the domain or IP this record describes (its identity)", and
+            // `has_whois` declares its endpoints as domain or ip_address. A netblock is neither. The
+            // type is shared with domain WHOIS on purpose — same protocol family, same fields — so a
+            // plugin inventing its own reading of it is exactly the drift the typepack exists to
+            // prevent, and it would put an edge on the canvas that the edge type does not allow.
+            //
+            // The cost is honest duplication: fifty addresses in one /24 produce fifty records
+            // saying the same thing. That is the type's design — one record per subject — and the
+            // netblock above is where the per-range view already lives.
+            const registeredOn = registeredAt(doc, nir);
+            const email = contactEmail(doc?.entities);
+            const record = await ctx.graph.createNode({
+                type: 'infrastructure.whois_record',
+                data: {
+                    subject: address,
+                    ...(organization ? { registrant: organization } : {}),
+                    ...(email ? { registrant_email: email } : {}),
+                    ...(registeredOn ? { created_at: registeredOn } : {}),
+                    raw: recordPayload(doc),
+                },
+            });
+            await ctx.graph.createEdge({ from: selection[i], to: String(record.id), label: 'has whois' });
+            records++;
 
             // A DELTA, not a snapshot. Passing `{...node.data, ...}` would write back every field as
             // this run happened to read it, clobbering anything another run filled in between — the
@@ -305,7 +318,7 @@ export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
     name: 'Vineyard RDAP IP',
-    version: '1.2.0',
+    version: '1.3.0',
     description: "IP allocation lookup through Vineyard's cached RDAP service.",
     plugins: [vineyardRdapIp],
 };

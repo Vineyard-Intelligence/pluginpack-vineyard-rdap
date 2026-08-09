@@ -16,11 +16,11 @@ For every selected IP Address node it asks Vineyard's RDAP service who holds the
 
 - creates the owning **Netblock** — `cidr`, `network_name`, `country_code`, `asn` — and links the IP
   to it as `within netblock`. One netblock per range, however many of the selected IPs fall inside it.
-- creates its **WHOIS Record** (`has whois`), once per range: `registrant`, `registrant_email`,
-  `registrar`, `created_at`, and a `raw` copy of everything else the lookup returned — allocation
-  type, status, every event, the full contact list, the national-registry block. That last field is
-  there because an RDAP answer carries far more than the typed fields have room for, and the parts
-  without a home are often the ones worth reading.
+- creates its **WHOIS Record** on the IP (`has whois`): `registrant`, `registrant_email`,
+  `created_at`, and a `raw` copy of everything else the lookup returned — allocation type, status,
+  every event, the full contact list, the national-registry block. That last field is there because
+  an RDAP answer carries far more than the typed fields have room for, and the parts without a home
+  are often the ones worth reading.
 - fills the IP's `organization`, `country_code`, `asn` and `version` **only where they are empty**.
 
 `version` is decided from the address rather than from the registry — a colon is only ever an IPv6
@@ -28,6 +28,23 @@ separator — so it is filled even on a lookup that returns nothing else.
 
 The `raw` copy deliberately omits the registry's own verbatim payload (`doc.raw`), which is tens of
 kilobytes of the same facts in a shape nobody reads. It is capped at 8,000 characters.
+
+### Why the record hangs off the IP and not the netblock
+
+`infrastructure.whois_record` is shared with domain WHOIS, and its declaration decides this:
+`subject` is *"the domain or IP this WHOIS record describes (its identity)"*, and the `has_whois`
+edge runs `from: [domain, ip_address]`. A CIDR is neither of those and a netblock is not a permitted
+endpoint — so keying by range, which reads tidier, would put an edge on the canvas that the edge
+type does not allow.
+
+The cost is honest duplication: fifty addresses in one /24 produce fifty records saying the same
+thing. That is what "one record per subject" means, and the per-range view already exists — it is
+the netblock.
+
+`registrar` is left **empty**. It means "sponsoring registrar", which is a domain concept: IP space
+is allocated by a *registry* (an RIR, or an NIR beneath it) and there is no registrar in the chain.
+`whois.apnic.net` is a server name, and putting it there would fill a field with a wrong answer that
+reads like a right one. Which registry replied is in the `raw` copy and in the run summary.
 
 The update is a delta, not a snapshot. Fields this lookup did not produce are not written back, so a
 value an analyst corrected by hand — or another collection filled a moment ago — survives.
