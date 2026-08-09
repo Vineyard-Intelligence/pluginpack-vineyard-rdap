@@ -2,7 +2,7 @@
   "identifier": "run.vineyard.pluginpacks.vineyard_rdap",
   "content_type": "vineyard:pluginpack",
   "name": "Vineyard RDAP IP",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "IP allocation lookup through Vineyard's cached RDAP service.",
   "author": {
     "name": "vineyard-run",
@@ -22,7 +22,7 @@
       "identifier": "run.vineyard.plugins.vineyard_rdap_ip",
       "content_type": "vineyard:plugin",
       "name": "Vineyard RDAP IP",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "description": "IP allocation lookup through Vineyard's cached RDAP service.",
       "icon": "boxes",
       "platforms": {
@@ -50,6 +50,21 @@
             "typepack": "run.vineyard.typepacks.infrastructure",
             "category": "infrastructure",
             "name": "whois_record"
+          },
+          {
+            "typepack": "run.vineyard.typepacks.identity",
+            "category": "identity",
+            "name": "organization"
+          },
+          {
+            "typepack": "run.vineyard.typepacks.identity",
+            "category": "identity",
+            "name": "email_address"
+          },
+          {
+            "typepack": "run.vineyard.typepacks.identity",
+            "category": "identity",
+            "name": "phone_number"
           }
         ]
       },

@@ -37,20 +37,55 @@ const APNIC = {
     query: '1.201.0.1',
     network: { handle: '1.201.0.0 - 1.201.255.255', name: 'KINXINC-KR', cidr: '1.201.0.0/16', country: 'KR' },
     entities: [
-        { handle: 'MI443-KR', roles: ['technical', 'administrative'], name: 'IP Manager', emails: ['noc@kinx.net'] },
+        { handle: 'MI443-KR', roles: ['technical', 'administrative'], name: 'IP Manager', emails: ['noc@kinx.net'], phones: ['+82-2-580-4601'] },
         // KRNIC's incident-response team, returned for EVERY Korean block. Taking `abuse` first
-        // would file the registry's own address as though it belonged to the holder.
-        { handle: 'IRT-KRNIC-KR', roles: ['abuse'], name: 'IRT-KRNIC-KR', emails: ['hostmaster@nic.or.kr'] },
+        // would file the registry's own address as though it belonged to the holder — and since node
+        // identity is type + label, it is not fifty nodes, it is ONE that collects an edge from every
+        // Korean organisation the case ever touches.
+        { handle: 'IRT-KRNIC-KR', roles: ['abuse'], name: 'IRT-KRNIC-KR', emails: ['hostmaster@nic.or.kr', 'hostmaster@nic.or.kr'] },
     ],
     source: 'whois.apnic.net',
     nir: {
         query: '1.201.0.1',
         nets: [
             { range: '1.201.0.0 - 1.201.255.255', cidr: '1.201.0.0/16', name: 'KINX', handle: 'KINXINC', country: 'KR' },
-            { range: '1.201.0.0 - 1.201.0.255', cidr: '1.201.0.0/24', name: 'KINX', handle: 'KINXINC', country: 'KR' },
+            {
+                range: '1.201.0.0 - 1.201.0.255', cidr: '1.201.0.0/24', name: 'KINX', handle: 'KINXINC', country: 'KR',
+                // The assignee's OWN contacts, which is the whole reason to prefer the national
+                // registry: APNIC's mirror offers a contact called "IP Manager".
+                contacts: {
+                    admin: { name: 'IP Manager', email: 'noc@kinx.net', phone: '+82-2-580-4601' },
+                    tech: { name: 'IP Manager', email: 'noc@kinx.net', phone: '+82-2-580-4600' },
+                },
+            },
         ],
     },
 };
+// RIPE holds 193.0.6.0/24 itself, so `abuse@ripe.net` on a TECHNICAL role really is the holder's —
+// which is why the guard keys on abuse being the ONLY role rather than on the address.
+// `+31205354444` has no separator after the dialing code, so its country code is unknowable.
+const RIPE = {
+    query: '193.0.6.139',
+    network: { handle: '193.0.0.0 - 193.0.7.255', name: 'RIPE-NCC', cidr: '193.0.6.0/24', country: 'NL' },
+    entities: [
+        { handle: 'OPS4-RIPE', roles: ['technical'], name: 'RIPE NCC Operations', emails: ['abuse@ripe.net'], phones: ['+31 20 535 4444', '+31 20 535 4445'] },
+        { handle: 'ORG-RIEN1-RIPE', roles: ['registrant'], name: 'RIPE NCC', emails: [], phones: ['+31205354444'] },
+        { handle: 'OPS4-RIPE', roles: ['abuse'], name: 'RIPE NCC Operations', emails: ['abuse@ripe.net'], phones: [] },
+    ],
+    source: 'whois.ripe.net',
+};
+// LACNIC answers `+598  26042222#4401`. `#` is not in the phone type's validator, so the number
+// would be refused outright for the sake of an extension.
+const LACNIC = {
+    query: '200.3.14.1',
+    network: { handle: 'UY-LACN', name: 'LACNIC', cidr: '200.3.12.0/22' },
+    entities: [
+        { handle: 'UY-LACN-LACNIC', roles: ['registrant'], name: 'LACNIC', emails: [], phones: ['+598  26042222#4401'] },
+        { handle: 'AIL', roles: ['administrative', 'technical', 'abuse'], name: 'Carlos M Martinez', emails: ['ipadmin@lacnic.net'], phones: [] },
+    ],
+    source: 'whois.lacnic.net',
+};
+
 /** The same allocation as the RIR alone would report it — no national-registry answer. */
 const APNIC_NO_NIR = { ...APNIC, nir: undefined };
 
@@ -118,7 +153,17 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.deepEqual(edges, [
         { from: 'n1', to: 'new-1', label: 'within netblock' },
         { from: 'n1', to: 'new-2', label: 'has whois' },
+        // The organisation is `identity.organization`, and `identity.controls` is the only edge type
+        // that takes one to a netblock (its `to` is `*`).
+        { from: 'new-3', to: 'new-1', label: 'controls' },
+        { from: 'new-3', to: 'new-4', label: 'owns' },
     ], 'has_whois runs FROM the ip_address, which is what the edge type declares');
+    assert.deepEqual(created[2], { type: 'identity.organization', data: { name: 'Google LLC' } });
+    assert.deepEqual(created[3], {
+        type: 'identity.email_address',
+        data: { email: 'arin-contact@google.com', display_name: 'Google LLC', domain: 'google.com' },
+    });
+    assert.equal(created.length, 4, 'network-abuse@google.com is ARIN abuse-only and gets no node');
     assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'Google LLC', version: 'ipv4' } }]);
     assert.match(out.summary, /whois\.arin\.net/);
 }
@@ -212,8 +257,9 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
         Object.fromEntries([ipNode('n1', '8.8.8.8'), ipNode('n2', '9.9.9.9')]),
         { '8.8.8.8': 401, '9.9.9.9': ARIN },
     );
-    const out = await plugin.run(ctx);
-    assert.match(out.summary, /session expired/i);
+    // THROWN, not returned: the host paints a returned summary green and calls the run succeeded,
+    // so a dead session would have read as an empty answer.
+    await assert.rejects(() => plugin.run(ctx), /session expired/i);
     assert.equal(created.length, 0, 'the rest of the selection is not spent on a dead session');
 }
 
@@ -227,8 +273,162 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
 
 // --- 7. An app without ctx.service is told so, not left to look broken -------------------------
 {
-    const out = await plugin.run({ input: { selection: ['n1'] }, graph: {} });
-    assert.match(out.summary, /does not offer Vineyard services/);
+    await assert.rejects(
+        () => plugin.run({ input: { selection: ['n1'] }, graph: {} }),
+        /does not offer Vineyard services/,
+    );
+}
+
+// --- 7b. A run where EVERY lookup failed is a failure, not "0 netblocks" -----------------------
+{
+    const { ctx } = stubCtx(Object.fromEntries([ipNode('n1', '8.8.8.8'), ipNode('n2', '9.9.9.9')]), {});
+    await assert.rejects(() => plugin.run(ctx), /every RDAP lookup failed/);
+}
+{
+    // ...but a PARTIAL run still succeeds. Trading a silent failure for a false alarm is worse.
+    const { ctx } = stubCtx(
+        Object.fromEntries([ipNode('n1', '8.8.8.8'), ipNode('n2', '9.9.9.9')]),
+        { '8.8.8.8': ARIN },
+    );
+    const out = await plugin.run(ctx);
+    assert.match(out.summary, /1 lookup\(s\) failed/);
+}
+
+// --- 9. CONTACTS: the registry's own desk never becomes a node --------------------------------
+{
+    const { ctx, created, edges } = stubCtx(Object.fromEntries([ipNode('n1', '1.201.0.1')]), { '1.201.0.1': APNIC });
+    await plugin.run(ctx);
+    const emails = created.filter((c) => c.type === 'identity.email_address').map((c) => c.data.email);
+    const phones = created.filter((c) => c.type === 'identity.phone_number').map((c) => c.data.number);
+    const orgs = created.filter((c) => c.type === 'identity.organization').map((c) => c.data.name);
+
+    assert.deepEqual(orgs, ['KINX'], "the national registry names the assignee; APNIC's mirror names a role mailbox");
+    // THE POINT OF THE GUARD. Node identity is type + label, so hostmaster@nic.or.kr is not one node
+    // per Korean lookup — it is ONE node that would collect an edge from every Korean organisation
+    // in the case. It is KRNIC's incident-response desk and it connects nothing to anything.
+    assert.equal(emails.includes('hostmaster@nic.or.kr'), false, "KRNIC's IRT is abuse-only and gets no node");
+    assert.deepEqual(emails, ['noc@kinx.net'], 'named once by APNIC and twice by KRNIC, created once');
+    assert.deepEqual(phones.sort(), ['+82-2-580-4600', '+82-2-580-4601']);
+    assert.equal(created.find((c) => c.type === 'identity.phone_number').data.country_code, '82');
+    assert.equal(
+        created.find((c) => c.type === 'identity.email_address').data.display_name,
+        'IP Manager',
+        'the contact name rides along rather than becoming a person node nobody can verify',
+    );
+    const owns = edges.filter((e) => e.label === 'owns');
+    assert.equal(owns.length, 3, 'one email + two phones, each owned by the organisation');
+    assert.ok(owns.every((e) => e.from === edges.find((x) => x.label === 'controls').from));
+}
+
+// --- 9b. abuse-only is the test, not the address ----------------------------------------------
+{
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '193.0.6.139')]), { '193.0.6.139': RIPE });
+    await plugin.run(ctx);
+    const emails = created.filter((c) => c.type === 'identity.email_address').map((c) => c.data.email);
+    // RIPE holds this block itself, so abuse@ripe.net on a TECHNICAL role is genuinely the holder's.
+    // Keying the guard on the address rather than on the roles would have thrown it away.
+    assert.deepEqual(emails, ['abuse@ripe.net']);
+    const phones = created.filter((c) => c.type === 'identity.phone_number');
+    assert.deepEqual(phones.map((p) => p.data.number), ['+31 20 535 4444', '+31 20 535 4445', '+31205354444']);
+    assert.deepEqual(phones.map((p) => p.data.country_code), ['31', '31', undefined],
+        'a number with no separator after the code says nothing about whether it is 3, 31 or 312');
+}
+
+// --- 9c. An extension must not cost the whole number ------------------------------------------
+{
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '200.3.14.1')]), { '200.3.14.1': LACNIC });
+    await plugin.run(ctx);
+    const phones = created.filter((c) => c.type === 'identity.phone_number').map((c) => c.data.number);
+    // `+598  26042222#4401` — `#` is not in the type's validator, so creating it verbatim would be a
+    // node the analyst never sees fail. The extension is dropped; the full string stays in `raw`.
+    assert.deepEqual(phones, ['+598  26042222']);
+    assert.deepEqual(
+        created.filter((c) => c.type === 'identity.email_address').map((c) => c.data.email),
+        ['ipadmin@lacnic.net'],
+        'Carlos also holds admin/technical, so he is not abuse-only',
+    );
+}
+
+// --- 9c-bis. Registry text is third-party and goes into VALIDATED fields ----------------------
+{
+    // `identity.email_address` validates ^[^@\s]+@[^@\s]+\.[^@\s]+$. A create that fails a
+    // validator is a node that silently never appears, with no error the analyst ever sees — so the
+    // check happens here, before it becomes graph data. Same reason the phone number is checked.
+    const malformed = {
+        query: '6.6.6.6',
+        network: { cidr: '6.6.6.0/24' },
+        entities: [
+            {
+                handle: 'H', roles: ['registrant'], name: 'Sixes Ltd',
+                emails: ['noc@sixes', 'not an email', '', 'real@sixes.test'],
+                phones: ['12', 'call us', '+1-555-0100'],
+            },
+        ],
+        source: 'whois.test',
+    };
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '6.6.6.6')]), { '6.6.6.6': malformed });
+    await plugin.run(ctx);
+    assert.deepEqual(
+        created.filter((c) => c.type === 'identity.email_address').map((c) => c.data.email),
+        ['real@sixes.test'],
+        'noc@sixes has an @ and still fails the type validator — a bare hostname is not a domain',
+    );
+    assert.deepEqual(
+        created.filter((c) => c.type === 'identity.phone_number').map((c) => c.data.number),
+        ['+1-555-0100'],
+        'too short and non-numeric both fail the phone validator',
+    );
+}
+
+// --- 9c-ter. The FIRST name for an address wins, so a later mention cannot rewrite it ----------
+{
+    const twoNames = {
+        query: '7.7.7.7',
+        network: { cidr: '7.7.7.0/24', country: 'KR' },
+        entities: [{ handle: 'A', roles: ['registrant'], name: 'Sevens', emails: ['ops@sevens.test'] }],
+        source: 'whois.test',
+        nir: {
+            nets: [{
+                cidr: '7.7.7.0/24', name: 'Sevens', country: 'KR',
+                contacts: { admin: { name: 'Night shift', email: 'ops@sevens.test' } },
+            }],
+        },
+    };
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '7.7.7.7')]), { '7.7.7.7': twoNames });
+    await plugin.run(ctx);
+    const mail = created.filter((c) => c.type === 'identity.email_address');
+    assert.equal(mail.length, 1, 'one address named twice is one node');
+    assert.equal(mail[0].data.display_name, 'Sevens', 'the first mention holds the name');
+}
+
+// --- 9c-quater. A hostile or broken registry answer costs a BOUNDED number of nodes -----------
+{
+    const flood = {
+        query: '4.4.4.4',
+        network: { cidr: '4.4.4.0/24' },
+        entities: [{
+            handle: 'F', roles: ['registrant'], name: 'Flood Ltd',
+            emails: Array.from({ length: 300 }, (_, i) => `c${i}@flood.test`),
+            phones: Array.from({ length: 300 }, (_, i) => `+1-555-${String(i).padStart(4, '0')}`),
+        }],
+        source: 'whois.test',
+    };
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '4.4.4.4')]), { '4.4.4.4': flood });
+    await plugin.run(ctx);
+    // The service is ours; the DATA inside it is five registries'. 600 staged nodes from one
+    // lookup is a review dialog nobody reads, whether the cause is malice or a parser bug.
+    assert.equal(created.filter((c) => c.type === 'identity.email_address').length, 8);
+    assert.equal(created.filter((c) => c.type === 'identity.phone_number').length, 8);
+}
+
+// --- 9d. No holder means no contacts. An address with nothing to attach it to is not an answer --
+{
+    const bare = { query: '5.5.5.5', network: { cidr: '5.5.5.0/24' }, entities: [
+        { handle: 'X', roles: ['abuse'], name: 'Abuse desk', emails: ['abuse@registry.test'] },
+    ], source: 'whois.test' };
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '5.5.5.5')]), { '5.5.5.5': bare });
+    await plugin.run(ctx);
+    assert.equal(created.some((c) => c.type.startsWith('identity.')), false);
 }
 
 // --- 8. The two copies of the manifest agree --------------------------------------------------
@@ -245,7 +445,7 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.deepEqual(a.io, b.io, 'io decides which nodes the run dialog offers');
     assert.deepEqual(
         a.io.produces.map((p) => p.name).sort(),
-        ['netblock', 'whois_record'],
+        ['email_address', 'netblock', 'organization', 'phone_number', 'whois_record'],
         'a produced type the manifest omits gets no icon, colour or label on the canvas',
     );
     assert.equal(a.name, 'Vineyard RDAP IP');
@@ -254,4 +454,4 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.equal('network' in a.scopes, false, 'a service pack declares no arbitrary egress');
 }
 
-console.log('vineyard-rdap ok: 13 scenarios');
+console.log('vineyard-rdap ok: 22 scenarios');

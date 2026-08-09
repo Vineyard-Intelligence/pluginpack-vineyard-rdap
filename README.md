@@ -7,7 +7,7 @@ registries.
 | --- | --- |
 | Pack | `run.vineyard.pluginpacks.vineyard_rdap` |
 | Consumes | `infrastructure.ip_address` |
-| Produces | `infrastructure.netblock` · `infrastructure.whois_record` |
+| Produces | `infrastructure.netblock` · `infrastructure.whois_record` · `identity.organization` · `identity.email_address` · `identity.phone_number` |
 | Scopes | `graph` (read/create/update, edge create) · `services: ["rdap"]` |
 
 ## What it does
@@ -21,6 +21,8 @@ For every selected IP Address node it asks Vineyard's RDAP service who holds the
   every event, the full contact list, the national-registry block. That last field is there because
   an RDAP answer carries far more than the typed fields have room for, and the parts without a home
   are often the ones worth reading.
+- creates the holding **Organization**, links it to the netblock (`controls`), and hangs its
+  **email addresses** and **phone numbers** off it as their own nodes (`owns`). See below.
 - fills the IP's `organization`, `country_code`, `asn` and `version` **only where they are empty**.
 
 `version` is decided from the address rather than from the registry — a colon is only ever an IPv6
@@ -48,6 +50,47 @@ reads like a right one. Which registry replied is in the `raw` copy and in the r
 
 The update is a delta, not a snapshot. Fields this lookup did not produce are not written back, so a
 value an analyst corrected by hand — or another collection filled a moment ago — survives.
+
+## Contacts become nodes (1.4.0)
+
+An RDAP answer carries the holder's real email addresses and phone numbers. Until 1.4.0 they
+survived only inside `raw` — readable, but not pivotable, and picking them out by hand was the
+tedious step this pack exists to remove.
+
+```
+IP Address ──within netblock──▶ Netblock ◀──controls── Organization ──owns──▶ Email Address
+     └──has whois──▶ WHOIS Record                            └──owns──▶ Phone Number
+```
+
+**Why an Organization node.** `identity.owns` runs from a person, organisation or handle to an
+email or phone, and no edge type in either pack takes a netblock to a contact — so the organisation
+is the only legal anchor. It earns the place anyway: two netblocks held by one company become
+connected the moment the second is looked up.
+
+**No holder, no contacts.** Where neither a registrant nor a national-registry assignee exists there
+is nothing to attach an address to, and a floating email node does not answer "who does this belong
+to". The lookup still produces the netblock and the record.
+
+### The rule that keeps this from wrecking the graph
+
+**An entity whose ONLY role is `abuse` gets no node.** Node identity in Vineyard is type + label, so
+`hostmaster@nic.or.kr` is not one node per Korean lookup — it is **one node that collects an edge
+from every Korean organisation in the case**. It is KRNIC's incident-response desk, returned on
+every Korean block, and it connects nothing to anything. RIPE does the same with `abuse@ripe.net`.
+
+The test is the role list, not the address. RIPE NCC holds `193.0.6.0/24` itself, and there
+`abuse@ripe.net` on a *technical* role genuinely is the holder's — a rule keyed on the address would
+have thrown it away.
+
+### Smaller decisions, each one measured
+
+| | |
+| --- | --- |
+| Contact names | ride along as the address's `display_name`. They are often a role ("IP Manager", "Managing Director") rather than a person, which is why they do not become `identity.person` nodes — telling one from the other reliably is not something this can do. |
+| `country_code` on a phone | read only up to the first separator: `+82-2-580-4601` → `82`. Codes are one to three digits and nothing in the string says which, so `+31205354444` gets none rather than a guess between `3`, `31` and `312`. |
+| Extensions | dropped. LACNIC answers `+598  26042222#4401`, and `#` is not in the type's validator — creating it verbatim would be a node that silently never appears. The full string stays in `raw`. |
+| Malformed values | refused. `noc@sixes` has an `@` and still fails `identity.email_address`'s validator. Registry text is third-party and these are validated fields. |
+| Volume | capped at 8 per kind per organisation. The measured maximum across five RIRs is two; the cap is there because a broken parser upstream should cost a bounded review, not six hundred staged nodes. |
 
 ## Why not just query RDAP directly
 
@@ -104,7 +147,7 @@ of the selection on a dead session.
 node verify.mjs
 ```
 
-Thirteen scenarios against responses the live service actually returned, plus a check that the JSON
+Twenty-two scenarios against responses the live service actually returned, plus a check that the JSON
 manifest and the manifest embedded in the bundle still agree — they are two copies of one
 declaration, the registry validates the first and the worker runs the second, so a scope added to
 one and not the other is a pack that passes review and then cannot work.

@@ -120,6 +120,102 @@ function contactEmail(entities) {
     return undefined;
 }
 
+// ---- contacts ---------------------------------------------------------------
+// An RDAP answer carries the holder's real email addresses and phone numbers, and until now they
+// survived only inside the `raw` blob — readable, but not pivotable, and picking them out by hand is
+// the tedious step this pack exists to remove. They become nodes now. What follows is the set of
+// rules that stops that from wrecking the graph.
+
+/** Contacts per organisation, per kind. Registry data is third-party; a malformed or hostile answer
+ *  should cost a bounded number of nodes. Measured maximum across five RIRs is two. */
+const MAX_CONTACTS = 8;
+
+/**
+ * An entity that speaks for the REGISTRY rather than for the holder.
+ *
+ * `abuse` alone is the tell, and the reason is measurable: a national registry answers with its own
+ * incident-response team for every block it serves — KRNIC returns `hostmaster@nic.or.kr` on every
+ * Korean lookup, RIPE `abuse@ripe.net` on every European one. Node identity here is type + label, so
+ * those are not fifty nodes, they are ONE node that collects an edge from every organisation the
+ * case ever touches. After a morning's work the most connected node in the graph is a registry
+ * mailbox that connects nothing to anything.
+ *
+ * An entity that ALSO holds a registrant/technical/administrative role is kept: for a block the
+ * registry itself holds (193.0.6.0/24 is RIPE NCC's own) that address really is the holder's.
+ */
+const isRegistryContact = (entity) => {
+    const roles = Array.isArray(entity?.roles) ? entity.roles : [];
+    return roles.length > 0 && roles.every((r) => String(r).toLowerCase() === 'abuse');
+};
+
+// The typepack's own validators, copied because a create that fails them is a lost node with no
+// error the analyst ever sees. Third-party text checked before it becomes graph data.
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const PHONE_RE = /^\+?[0-9 ().-]{5,}$/;
+
+/** A dialable number, or undefined. Extensions are dropped: LACNIC answers `+598  26042222#4401`
+ *  and `#` is not in the type's validator, so the whole number would be refused for the sake of a
+ *  suffix. The full string stays in the record's `raw`. */
+function phoneNumber(value) {
+    const trimmed = String(value ?? '').split(/[#;]|\bx\b|\bext\b/i)[0].trim();
+    return PHONE_RE.test(trimmed) ? trimmed : undefined;
+}
+
+/** The dialing code, only when the number states it unambiguously.
+ *
+ *  `+82-2-580-4601` → `82`. Country codes are one to three digits and nothing in the string says
+ *  which, so this reads only up to the first separator and gives up on `+31205354444` rather than
+ *  guessing `3`, `31` or `312`. All four registries measured put a separator there. */
+function dialingCode(number) {
+    const match = /^\+(\d{1,3})[\s.\-()]/.exec(String(number ?? ''));
+    return match ? match[1] : undefined;
+}
+
+/**
+ * The holder's contact addresses and numbers, de-duplicated, in one pass over both sources.
+ *
+ * The national-registry block is read as well as the RIR's entity list, and it is the better of the
+ * two where it exists — KRNIC gives `noc@kinx.net` and `+82-2-580-460x` for the /24 actually
+ * assigned, while APNIC's mirror offers a contact named "IP Manager". Same organisation, and the
+ * de-duplication below means naming it twice costs nothing.
+ */
+function contactsOf(doc, nir) {
+    const emails = new Map(); // lowercased address -> node data
+    const phones = new Map(); // dialable number -> node data
+
+    const addEmail = (value, name) => {
+        const email = String(value ?? '').trim();
+        if (!EMAIL_RE.test(email) || emails.size >= MAX_CONTACTS) return;
+        const key = email.toLowerCase();
+        if (emails.has(key)) return;
+        emails.set(key, {
+            email,
+            ...(name ? { display_name: String(name).trim() } : {}),
+            domain: email.slice(email.indexOf('@') + 1).toLowerCase(),
+        });
+    };
+    const addPhone = (value) => {
+        const number = phoneNumber(value);
+        if (!number || phones.size >= MAX_CONTACTS || phones.has(number)) return;
+        const code = dialingCode(number);
+        phones.set(number, { number, ...(code ? { country_code: code } : {}) });
+    };
+
+    for (const entity of doc?.entities ?? []) {
+        if (isRegistryContact(entity)) continue;
+        // The contact's own name rides along as the address's display_name. It is often a role
+        // ("IP Manager") rather than a person, which is exactly why it does not become a node of
+        // its own — telling a role mailbox from a human reliably is not something this can do.
+        for (const email of entity?.emails ?? []) addEmail(email, entity?.name);
+        for (const phone of entity?.phones ?? []) addPhone(phone);
+    }
+    for (const contact of Object.values(nir?.contacts ?? {})) {
+        addEmail(contact?.email, contact?.name);
+        addPhone(contact?.phone);
+    }
+    return { emails: [...emails.values()], phones: [...phones.values()] };
+}
+
 /** Everything the service returned, minus the registry's own verbatim payload, capped.
  *
  *  `raw` on a whois_record is where the parts with no field of their own survive: allocation type,
@@ -146,7 +242,7 @@ const vineyardRdapIp = {
         identifier: 'run.vineyard.plugins.vineyard_rdap_ip',
         content_type: 'vineyard:plugin',
         name: 'Vineyard RDAP IP',
-        version: '1.3.0',
+        version: '1.4.0',
         description: "IP allocation lookup through Vineyard's cached RDAP service.",
         icon: 'boxes',
         author: { name: 'VINEYARD.RUN', url: 'https://vineyard.run' },
@@ -159,6 +255,9 @@ const vineyardRdapIp = {
             produces: [
                 { typepack: 'run.vineyard.typepacks.infrastructure', category: 'infrastructure', name: 'netblock' },
                 { typepack: 'run.vineyard.typepacks.infrastructure', category: 'infrastructure', name: 'whois_record' },
+                { typepack: 'run.vineyard.typepacks.identity', category: 'identity', name: 'organization' },
+                { typepack: 'run.vineyard.typepacks.identity', category: 'identity', name: 'email_address' },
+                { typepack: 'run.vineyard.typepacks.identity', category: 'identity', name: 'phone_number' },
             ],
         },
         scopes: {
@@ -174,11 +273,13 @@ const vineyardRdapIp = {
     async run(ctx) {
         // Absent on a Vineyard older than ctx.service, and on any build whose host bridge does not
         // offer it. Say which, rather than failing as though the lookup went wrong.
+        // A build with no ctx.service cannot reach the service at all. Thrown, not returned: the host
+        // renders a returned summary as a green "succeeded", so a broken install would read as a
+        // lookup that simply found nothing. Same reasoning as the failure ending below.
         if (!ctx.service) {
-            return {
-                summary: 'This Vineyard build does not offer Vineyard services (ctx.service). Update the app, or use IP Recon → RDAP IP, which queries rdap.org directly.',
-                counts: { netblocks: 0 },
-            };
+            throw new Error(
+                'This Vineyard build does not offer Vineyard services (ctx.service). Update the app, or use IP Recon → RDAP IP, which queries rdap.org directly.',
+            );
         }
         const selection = ctx.input.selection;
         if (!selection.length) {
@@ -187,8 +288,10 @@ const vineyardRdapIp = {
 
         const netblocks = new Map(); // range -> node id, so one /24 is created once per run
         const sources = new Set(); // which registry actually answered
+        const orgs = new Set(); // distinct holders seen, for the summary
         let enriched = 0;
         let records = 0;
+        let contacts = 0;
         let failed = 0;
         let unauthorized = false;
 
@@ -281,6 +384,39 @@ const vineyardRdapIp = {
             await ctx.graph.createEdge({ from: selection[i], to: String(record.id), label: 'has whois' });
             records++;
 
+            // The holder, and the way to reach it.
+            //
+            // WHY AN ORGANISATION NODE AND NOT AN EDGE FROM THE NETBLOCK: `identity.owns` runs
+            // from a person, organisation or handle to an email/phone, and there is no edge type in
+            // either pack that takes a netblock to a contact. So the organisation is not decoration
+            // here, it is the only legal anchor — and it earns its place anyway, because two
+            // netblocks held by one company become connected the moment the second is looked up.
+            //
+            // No organisation means no contacts. An address with nothing to attach it to is a
+            // floating node, and "who does this belong to" is the question the analyst is asking.
+            if (organization) {
+                const org = await ctx.graph.createNode({
+                    type: 'identity.organization',
+                    data: { name: organization, ...(country ? { country } : {}) },
+                });
+                const orgId = String(org.id);
+                if (netblocks.has(range)) {
+                    await ctx.graph.createEdge({ from: orgId, to: netblocks.get(range), label: 'controls' });
+                }
+                const { emails, phones } = contactsOf(doc, nir);
+                for (const data of emails) {
+                    const n = await ctx.graph.createNode({ type: 'identity.email_address', data });
+                    await ctx.graph.createEdge({ from: orgId, to: String(n.id), label: 'owns' });
+                    contacts++;
+                }
+                for (const data of phones) {
+                    const n = await ctx.graph.createNode({ type: 'identity.phone_number', data });
+                    await ctx.graph.createEdge({ from: orgId, to: String(n.id), label: 'owns' });
+                    contacts++;
+                }
+                orgs.add(organization.toLowerCase());
+            }
+
             // A DELTA, not a snapshot. Passing `{...node.data, ...}` would write back every field as
             // this run happened to read it, clobbering anything another run filled in between — the
             // whole point of update being fill-merge. Only the fields this lookup actually produced,
@@ -300,16 +436,31 @@ const vineyardRdapIp = {
         }
 
         if (unauthorized) {
-            return {
-                summary: 'Your session expired — sign in again and re-run.',
-                counts: { netblocks: netblocks.size, whois_records: records, ips_updated: enriched },
-            };
+            throw new Error('Your session expired — sign in again and re-run.');
+        }
+        // Every lookup failed and nothing came back. A RETURNED summary is always a green
+        // "succeeded" on the run's row — and with nothing staged the toast reads "No changes" — so
+        // returning here made a service that was down look like addresses nobody has registered.
+        // A partial run still succeeds; the count of failures is in the summary either way.
+        if (failed && !records && !netblocks.size) {
+            throw new Error(
+                `every RDAP lookup failed (${failed} address(es)) — the service may be unreachable`,
+            );
         }
         const via = sources.size ? ` via ${[...sources].sort().join(', ')}` : '';
         const failures = failed ? `, ${failed} lookup(s) failed` : '';
         return {
-            summary: `${netblocks.size} netblock(s), ${records} whois record(s), ${enriched} IP(s) enriched${via}${failures}`,
-            counts: { netblocks: netblocks.size, whois_records: records, ips_updated: enriched, failed },
+            summary:
+                `${netblocks.size} netblock(s), ${orgs.size} organisation(s), ${contacts} contact(s), ` +
+                `${records} whois record(s), ${enriched} IP(s) enriched${via}${failures}`,
+            counts: {
+                netblocks: netblocks.size,
+                organizations: orgs.size,
+                contacts,
+                whois_records: records,
+                ips_updated: enriched,
+                failed,
+            },
         };
     },
 };
@@ -318,7 +469,7 @@ export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
     name: 'Vineyard RDAP IP',
-    version: '1.3.0',
+    version: '1.4.0',
     description: "IP allocation lookup through Vineyard's cached RDAP service.",
     plugins: [vineyardRdapIp],
 };
