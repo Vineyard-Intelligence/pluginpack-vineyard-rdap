@@ -22,6 +22,9 @@ const ARIN = {
     entities: [{ handle: 'GOGL', roles: ['registrant'], name: 'Google LLC' }],
     source: 'whois.arin.net',
 };
+// APNIC mirrors KRNIC, so this answer is coarse rather than wrong: the /16 and a contact called
+// "IP Manager". The `nir` block beside it is what KRNIC's own whois said — the /24 actually
+// assigned, to KINX. Copied from a live response for 1.201.0.1.
 const APNIC = {
     query: '1.201.0.1',
     network: { handle: '1.201.0.0 - 1.201.255.255', name: 'KINXINC-KR', cidr: '1.201.0.0/16', country: 'KR' },
@@ -30,7 +33,16 @@ const APNIC = {
         { handle: 'IRT-KRNIC-KR', roles: ['abuse'], name: 'IRT-KRNIC-KR' },
     ],
     source: 'whois.apnic.net',
+    nir: {
+        query: '1.201.0.1',
+        nets: [
+            { range: '1.201.0.0 - 1.201.255.255', cidr: '1.201.0.0/16', name: 'KINX', handle: 'KINXINC', country: 'KR' },
+            { range: '1.201.0.0 - 1.201.0.255', cidr: '1.201.0.0/24', name: 'KINX', handle: 'KINXINC', country: 'KR' },
+        ],
+    },
 };
+/** The same allocation as the RIR alone would report it — no national-registry answer. */
+const APNIC_NO_NIR = { ...APNIC, nir: undefined };
 
 /** A ctx that records what the plugin did instead of touching a graph. */
 function stubCtx(nodes, responses) {
@@ -81,17 +93,41 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.equal('country_code' in created[0].data, false);
 }
 
-// --- 2. APNIC: NO registrant. The role contact must not become the organization ----------------
+// --- 2. APNIC with no national answer: the role contact must not become the organization -------
 {
     const { ctx, created, updates } = stubCtx(
         Object.fromEntries([ipNode('n1', '1.201.0.1')]),
-        { '1.201.0.1': APNIC },
+        { '1.201.0.1': APNIC_NO_NIR },
     );
     await plugin.run(ctx);
     assert.deepEqual(updates, [{ id: 'n1', patch: { country_code: 'KR' } }], 'no "IP Manager" organization');
     // The allocation name is not lost — it belongs on the netblock, which is what a netname is.
     assert.equal(created[0].data.network_name, 'KINXINC-KR');
     assert.equal(created[0].data.country_code, 'KR');
+}
+
+// --- 2b. THE KR CASE THIS PACK EXISTS FOR -----------------------------------------------------
+// KRNIC's own answer is more specific than the APNIC mirror and names the assignee. Taking the
+// mirror would file the host under a range 256 times too large and under no organisation at all,
+// which is precisely the coarseness the service's NIR fallback removes.
+{
+    const { ctx, created, updates } = stubCtx(
+        Object.fromEntries([ipNode('n1', '1.201.0.1')]),
+        { '1.201.0.1': APNIC },
+    );
+    const out = await plugin.run(ctx);
+    assert.equal(created[0].data.cidr, '1.201.0.0/24', 'the assigned /24, not the mirrored /16');
+    assert.equal(created[0].data.network_name, 'KINX');
+    assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'KINX', country_code: 'KR' } }]);
+    assert.match(out.summary, /KRNIC/, 'the summary says which registry actually answered');
+}
+
+// --- 2c. A registrant, where one exists, outranks the national registry's netname ---------------
+{
+    const withBoth = { ...APNIC, entities: [{ roles: ['registrant'], name: 'KINX Inc.' }] };
+    const { ctx, updates } = stubCtx(Object.fromEntries([ipNode('n1', '1.201.0.1')]), { '1.201.0.1': withBoth });
+    await plugin.run(ctx);
+    assert.equal(updates[0].patch.organization, 'KINX Inc.', 'an explicit registrant is the registry\'s own statement');
 }
 
 // --- 3. The update is a DELTA and never overwrites what the node already has -------------------
@@ -157,4 +193,4 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.equal('network' in a.scopes, false, 'a service pack declares no arbitrary egress');
 }
 
-console.log('vineyard-rdap ok: 8 scenarios');
+console.log('vineyard-rdap ok: 10 scenarios');

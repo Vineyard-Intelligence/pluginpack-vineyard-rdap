@@ -31,22 +31,26 @@ three things:
 - **A shared cache.** Registries throttle per source address. Querying from each analyst's browser
   spends each analyst's own quota, and gets nothing back for a range a colleague looked up an hour
   ago. The service caches by range.
-- **KRNIC / JPNIC.** Neither serves RDAP. Where APNIC answers only with the parent allocation, the
-  service falls back to their whois gateways and normalises the result into the same shape. (Not
-  every `.kr` address takes that path — APNIC answers many directly.)
+- **KRNIC / JPNIC.** Neither serves RDAP, and APNIC *mirrors* them — so a plain RDAP answer for a
+  Korean address is not wrong, it is coarse. Measured on `1.201.0.1`: APNIC returns the **/16**
+  `KINXINC-KR` and its only contact is named "IP Manager", while KRNIC returns the **/24** actually
+  assigned, to **KINX**. This pack takes the national registry's answer where the service supplies
+  one, so the host is filed under the range it was really assigned and under a real organisation.
 - **One shape.** ARIN, RIPE, APNIC, LACNIC and AFRINIC disagree about field names. The service
   returns `network` / `entities` / `events` / `remarks` whichever answered, and says which one did —
   the run summary names it.
 
-## `organization` comes from the registrant, and from nothing else
+## Where `organization` comes from
+
+In order: the **`registrant`** entity, then the **national registry's** assignee name. Nothing else.
 
 Administrative and technical contacts are people and role mailboxes, not the organisation holding
-the block. Measured against `1.201.0.1`, a KINX allocation: APNIC returns no `registrant` at all,
-and its administrative contact is named **"IP Manager"**. Writing that into an IP's `organization`
-would look like an answer.
+the block — APNIC's only contact for `1.201.0.1` is named **"IP Manager"**, and writing that into an
+IP's `organization` would look like an answer. A registrant, where a registry gives one, is that
+registry's own statement of who holds the block and outranks everything.
 
-Where the registrant is missing, the allocation name is still recorded — as the netblock's
-`network_name` (`KINXINC-KR`), which is what a netname is.
+Where neither exists the field is left empty. The allocation name is still recorded, as the
+netblock's `network_name`, which is what a netname is.
 
 ## The service, and the scope
 
@@ -65,7 +69,7 @@ of the selection on a dead session.
 node verify.mjs
 ```
 
-Eight scenarios against responses the live service actually returned, plus a check that the JSON
+Ten scenarios against responses the live service actually returned, plus a check that the JSON
 manifest and the manifest embedded in the bundle still agree — they are two copies of one
 declaration, the registry validates the first and the worker runs the second, so a scope added to
 one and not the other is a pack that passes review and then cannot work.

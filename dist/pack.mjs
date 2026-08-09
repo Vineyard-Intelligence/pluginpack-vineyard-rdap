@@ -47,6 +47,30 @@ function holderName(entities) {
     return String(registrant?.name ?? '').trim();
 }
 
+/**
+ * The most specific national-registry assignment covering the query, or undefined.
+ *
+ * Present only for KR/JP IPv4, where the service falls back to KRNIC/JPNIC whois because neither
+ * serves RDAP. This is the difference the pack exists for and it is easy to leave on the floor:
+ * APNIC MIRRORS those registries, so a plain RDAP answer is not wrong, it is just coarse. Measured
+ * on 1.201.0.1 — APNIC returns the /16 `KINXINC-KR` and names its only contact "IP Manager", while
+ * KRNIC returns the /24 actually assigned, named `KINX`. Taking the widest of the two would file a
+ * host under a range 256 times too big and under no organisation at all.
+ *
+ * `nets` runs broad to specific, so the largest prefix length wins; a net without a parseable CIDR
+ * sorts last rather than being trusted.
+ */
+function nirAssignment(doc) {
+    const nets = doc?.nir?.nets;
+    if (!Array.isArray(nets) || !nets.length) return undefined;
+    const prefixLength = (net) => {
+        const match = /\/(\d{1,3})$/.exec(String(net?.cidr ?? ''));
+        return match ? Number(match[1]) : -1;
+    };
+    const best = [...nets].sort((a, b) => prefixLength(b) - prefixLength(a))[0];
+    return prefixLength(best) >= 0 ? best : undefined;
+}
+
 /** CIDR if the registry gave one, else the range as start–end, else ''. */
 function rangeOf(network) {
     if (network?.cidr) return String(network.cidr);
@@ -61,9 +85,9 @@ const vineyardRdapIp = {
         identifier: 'run.vineyard.plugins.vineyard_rdap_ip',
         content_type: 'vineyard:plugin',
         name: 'Vineyard IP RDAP',
-        version: '1.0.0',
+        version: '1.1.0',
         description:
-            "Resolves each selected IP's allocation through Vineyard's cached RDAP service: adds the owning Netblock node (CIDR, netname, country) and fills the IP's organization and country. One shape across every registry, and a cache shared between analysts.",
+            "Resolves each selected IP's allocation through Vineyard's cached RDAP service: adds the owning Netblock node and fills the IP's organization and country. For KR/JP addresses it prefers the national registry's assignment over the coarser RIR mirror.",
         icon: 'boxes',
         author: { name: 'VINEYARD.RUN', url: 'https://vineyard.run' },
         license: 'Apache-2.0',
@@ -137,10 +161,16 @@ const vineyardRdapIp = {
             }
 
             const network = doc?.network ?? {};
-            const range = rangeOf(network);
-            const country = countryCode(network.country);
-            const organization = holderName(doc?.entities);
+            const nir = nirAssignment(doc);
+            const range = nir?.cidr ? String(nir.cidr) : rangeOf(network);
+            const netname = String(nir?.name ?? network.name ?? '').trim();
+            const country = countryCode(nir?.country ?? network.country);
+            // A national registry names the ASSIGNEE where the RIR mirror names a role contact, so
+            // it is the answer for `organization` when there is no registrant — but only then: an
+            // explicit registrant is the registry's own statement of who holds the block.
+            const organization = holderName(doc?.entities) || String(nir?.name ?? '').trim();
             if (doc?.source) sources.add(String(doc.source));
+            if (nir) sources.add(country === 'JP' ? 'JPNIC' : 'KRNIC');
 
             if (range) {
                 let netblockId = netblocks.get(range);
@@ -149,7 +179,7 @@ const vineyardRdapIp = {
                         type: 'infrastructure.netblock',
                         data: {
                             cidr: range,
-                            ...(network.name ? { network_name: String(network.name) } : {}),
+                            ...(netname ? { network_name: netname } : {}),
                             ...(country ? { country_code: country } : {}),
                         },
                     });
@@ -192,8 +222,8 @@ export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
     name: 'Vineyard IP RDAP',
-    version: '1.0.0',
+    version: '1.1.0',
     description:
-        "IP allocation lookup through Vineyard's cached, normalized RDAP service: one shape across every RIR, KRNIC/JPNIC whois fallback where RDAP is not served, and a cache shared between analysts instead of each one spending their own registry rate limit.",
+        "IP allocation lookup through Vineyard's cached RDAP service. For Korean and Japanese addresses it uses KRNIC/JPNIC's own answer, which is more specific than the APNIC mirror and names the assignee rather than a role contact.",
     plugins: [vineyardRdapIp],
 };
