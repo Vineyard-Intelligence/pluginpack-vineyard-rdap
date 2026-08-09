@@ -71,6 +71,61 @@ function nirAssignment(doc) {
     return prefixLength(best) >= 0 ? best : undefined;
 }
 
+/** 'ipv4' or 'ipv6', decided from the ADDRESS rather than from the registry.
+ *
+ *  `network.ip_version` is there too, but it is a field a registry may omit and this is a fact the
+ *  address states on its own — a colon is only ever an IPv6 separator. Deriving it locally means the
+ *  field is filled on every lookup, including one that answers with nothing else useful. */
+const ipVersionOf = (address) => (address.includes(':') ? 'ipv6' : 'ipv4');
+
+/** The originating ASN as 'AS<n>', or undefined.
+ *
+ *  ARIN-only, and usually absent even there — `arin_originas0_originautnums` came back empty for
+ *  8.8.8.8. It costs three lines and is exactly right when a registry does supply it, so it is read
+ *  opportunistically rather than advertised. ASN discovery proper is the iptoasn/Cymru pack's job. */
+function originAsn(doc) {
+    const nums = doc?.raw?.arin_originas0_originautnums;
+    const first = Array.isArray(nums) ? nums.find((n) => Number.isFinite(Number(n))) : undefined;
+    return first === undefined ? undefined : `AS${Number(first)}`;
+}
+
+/** The date a registry says the allocation was made, ISO-ish, or undefined. */
+function registeredAt(doc, nir) {
+    if (nir?.created) return String(nir.created);
+    const events = doc?.events;
+    const event = Array.isArray(events)
+        ? events.find((e) => String(e?.action ?? '').toLowerCase() === 'registration')
+        : undefined;
+    return event?.date ? String(event.date) : undefined;
+}
+
+/** The best contact address for the allocation, or undefined.
+ *
+ *  Entity roles in priority order, and `abuse` LAST on purpose: a national registry answers with its
+ *  own incident-response team (KRNIC's IRT is `hostmaster@nic.or.kr` for every Korean block), so
+ *  taking abuse first would record the registry's address as though it were the holder's. The
+ *  technical contact is the one that belongs to the organisation — `noc@kinx.net` for KINX. */
+function contactEmail(entities) {
+    for (const role of ['registrant', 'technical', 'administrative', 'abuse']) {
+        const entity = (entities || []).find((e) => Array.isArray(e?.roles) && e.roles.includes(role));
+        const email = entity?.emails?.find((x) => typeof x === 'string' && x.includes('@'));
+        if (email) return String(email).trim();
+    }
+    return undefined;
+}
+
+/** Everything the service returned, minus the registry's own verbatim payload, capped.
+ *
+ *  `raw` on a whois_record is where the parts with no field of their own survive: allocation type,
+ *  status, the full contact list, every event, the national-registry block. Dropping `doc.raw` keeps
+ *  it to roughly a screenful instead of tens of kilobytes — that copy is the registry's, and the
+ *  normalized view above it is the one a reader can use. */
+function recordPayload(doc) {
+    const { raw, ...normalized } = doc ?? {};
+    const text = JSON.stringify(normalized, null, 1);
+    return text.length > 8000 ? `${text.slice(0, 8000)}\n… truncated` : text;
+}
+
 /** CIDR if the registry gave one, else the range as start–end, else ''. */
 function rangeOf(network) {
     if (network?.cidr) return String(network.cidr);
@@ -84,10 +139,9 @@ const vineyardRdapIp = {
     manifest: {
         identifier: 'run.vineyard.plugins.vineyard_rdap_ip',
         content_type: 'vineyard:plugin',
-        name: 'Vineyard IP RDAP',
-        version: '1.1.0',
-        description:
-            "Resolves each selected IP's allocation through Vineyard's cached RDAP service: adds the owning Netblock node and fills the IP's organization and country. For KR/JP addresses it prefers the national registry's assignment over the coarser RIR mirror.",
+        name: 'Vineyard RDAP IP',
+        version: '1.2.0',
+        description: "IP allocation lookup through Vineyard's cached RDAP service.",
         icon: 'boxes',
         author: { name: 'VINEYARD.RUN', url: 'https://vineyard.run' },
         license: 'Apache-2.0',
@@ -98,6 +152,7 @@ const vineyardRdapIp = {
             ],
             produces: [
                 { typepack: 'run.vineyard.typepacks.infrastructure', category: 'infrastructure', name: 'netblock' },
+                { typepack: 'run.vineyard.typepacks.infrastructure', category: 'infrastructure', name: 'whois_record' },
             ],
         },
         scopes: {
@@ -127,6 +182,7 @@ const vineyardRdapIp = {
         const netblocks = new Map(); // range -> node id, so one /24 is created once per run
         const sources = new Set(); // which registry actually answered
         let enriched = 0;
+        let records = 0;
         let failed = 0;
         let unauthorized = false;
 
@@ -172,6 +228,8 @@ const vineyardRdapIp = {
             if (doc?.source) sources.add(String(doc.source));
             if (nir) sources.add(country === 'JP' ? 'JPNIC' : 'KRNIC');
 
+            const asn = originAsn(doc);
+
             if (range) {
                 let netblockId = netblocks.get(range);
                 if (!netblockId) {
@@ -181,10 +239,31 @@ const vineyardRdapIp = {
                             cidr: range,
                             ...(netname ? { network_name: netname } : {}),
                             ...(country ? { country_code: country } : {}),
+                            ...(asn ? { asn } : {}),
                         },
                     });
                     netblockId = String(created.id);
                     netblocks.set(range, netblockId);
+
+                    // The registration record for the ALLOCATION, so it is created once per range
+                    // rather than once per address — an RDAP answer describes the block, not the
+                    // host. It is where the parts with no field of their own live: allocation type,
+                    // status, dates, the contact list, and the national-registry block.
+                    const registeredOn = registeredAt(doc, nir);
+                    const email = contactEmail(doc?.entities);
+                    const record = await ctx.graph.createNode({
+                        type: 'infrastructure.whois_record',
+                        data: {
+                            subject: range,
+                            ...(organization ? { registrant: organization } : {}),
+                            ...(email ? { registrant_email: email } : {}),
+                            ...(doc?.source ? { registrar: String(doc.source) } : {}),
+                            ...(registeredOn ? { created_at: registeredOn } : {}),
+                            raw: recordPayload(doc),
+                        },
+                    });
+                    await ctx.graph.createEdge({ from: netblockId, to: String(record.id), label: 'has whois' });
+                    records++;
                 }
                 await ctx.graph.createEdge({ from: selection[i], to: netblockId, label: 'within netblock' });
             }
@@ -197,6 +276,10 @@ const vineyardRdapIp = {
             const patch = {};
             if (organization && !node.data.organization) patch.organization = organization;
             if (country && !node.data.country_code) patch.country_code = country;
+            if (asn && !node.data.asn) patch.asn = asn;
+            // Not from the registry — see ipVersionOf. Filled even when the lookup found nothing
+            // else, because the address always says it.
+            if (!node.data.version) patch.version = ipVersionOf(address);
             if (Object.keys(patch).length) {
                 await ctx.graph.updateNode(selection[i], patch);
                 enriched++;
@@ -206,14 +289,14 @@ const vineyardRdapIp = {
         if (unauthorized) {
             return {
                 summary: 'Your session expired — sign in again and re-run.',
-                counts: { netblocks: netblocks.size, ips_updated: enriched },
+                counts: { netblocks: netblocks.size, whois_records: records, ips_updated: enriched },
             };
         }
         const via = sources.size ? ` via ${[...sources].sort().join(', ')}` : '';
         const failures = failed ? `, ${failed} lookup(s) failed` : '';
         return {
-            summary: `${netblocks.size} netblock(s), ${enriched} IP(s) enriched${via}${failures}`,
-            counts: { netblocks: netblocks.size, ips_updated: enriched, failed },
+            summary: `${netblocks.size} netblock(s), ${records} whois record(s), ${enriched} IP(s) enriched${via}${failures}`,
+            counts: { netblocks: netblocks.size, whois_records: records, ips_updated: enriched, failed },
         };
     },
 };
@@ -221,9 +304,8 @@ const vineyardRdapIp = {
 export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
-    name: 'Vineyard IP RDAP',
-    version: '1.1.0',
-    description:
-        "IP allocation lookup through Vineyard's cached RDAP service. For Korean and Japanese addresses it uses KRNIC/JPNIC's own answer, which is more specific than the APNIC mirror and names the assignee rather than a role contact.",
+    name: 'Vineyard RDAP IP',
+    version: '1.2.0',
+    description: "IP allocation lookup through Vineyard's cached RDAP service.",
     plugins: [vineyardRdapIp],
 };

@@ -1,9 +1,9 @@
 {
   "identifier": "run.vineyard.pluginpacks.vineyard_rdap",
   "content_type": "vineyard:pluginpack",
-  "name": "Vineyard IP RDAP",
-  "version": "1.1.0",
-  "description": "IP allocation lookup through Vineyard's cached RDAP service. For Korean and Japanese addresses it uses KRNIC/JPNIC's own answer, which is more specific than the APNIC mirror and names the assignee rather than a role contact.",
+  "name": "Vineyard RDAP IP",
+  "version": "1.2.0",
+  "description": "IP allocation lookup through Vineyard's cached RDAP service.",
   "author": {
     "name": "vineyard-run",
     "url": "https://github.com/vineyard-run"
@@ -21,9 +21,9 @@
     {
       "identifier": "run.vineyard.plugins.vineyard_rdap_ip",
       "content_type": "vineyard:plugin",
-      "name": "Vineyard IP RDAP",
-      "version": "1.1.0",
-      "description": "Resolves each selected IP's allocation through Vineyard's cached RDAP service: adds the owning Netblock node and fills the IP's organization and country. For KR/JP addresses it prefers the national registry's assignment over the coarser RIR mirror.",
+      "name": "Vineyard RDAP IP",
+      "version": "1.2.0",
+      "description": "IP allocation lookup through Vineyard's cached RDAP service.",
       "icon": "boxes",
       "platforms": {
         "primary": "web",
@@ -45,6 +45,11 @@
             "typepack": "run.vineyard.typepacks.infrastructure",
             "category": "infrastructure",
             "name": "netblock"
+          },
+          {
+            "typepack": "run.vineyard.typepacks.infrastructure",
+            "category": "infrastructure",
+            "name": "whois_record"
           }
         ]
       },

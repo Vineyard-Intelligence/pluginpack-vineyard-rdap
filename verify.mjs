@@ -18,9 +18,17 @@ import pack from './dist/pack.mjs';
 
 const ARIN = {
     query: '8.8.8.8',
-    network: { handle: 'NET-8-8-8-0-2', name: 'GOGL', cidr: '8.8.8.0/24', ip_version: 'v4' },
-    entities: [{ handle: 'GOGL', roles: ['registrant'], name: 'Google LLC' }],
+    network: { handle: 'NET-8-8-8-0-2', name: 'GOGL', cidr: '8.8.8.0/24', ip_version: 'v4', type: 'DIRECT ALLOCATION' },
+    entities: [
+        { handle: 'ABUSE5250-ARIN', roles: ['abuse'], name: 'Abuse', emails: ['network-abuse@google.com'] },
+        { handle: 'GOGL', roles: ['registrant'], name: 'Google LLC', emails: [] },
+        { handle: 'ZG39-ARIN', roles: ['administrative', 'technical'], name: 'Google LLC', emails: ['arin-contact@google.com'] },
+    ],
+    events: [{ action: 'last changed', date: '2023-12-28T17:24:56-05:00' }, { action: 'registration', date: '2023-12-28T17:24:33-05:00' }],
     source: 'whois.arin.net',
+    // The registry's verbatim payload. Present in every real answer and tens of kilobytes of it —
+    // the record's `raw` must hold the normalized view, not this.
+    raw: { objectClassName: 'ip network', arin_originas0_originautnums: [], vcardArray: ['vcard', []] },
 };
 // APNIC mirrors KRNIC, so this answer is coarse rather than wrong: the /16 and a contact called
 // "IP Manager". The `nir` block beside it is what KRNIC's own whois said — the /24 actually
@@ -29,8 +37,10 @@ const APNIC = {
     query: '1.201.0.1',
     network: { handle: '1.201.0.0 - 1.201.255.255', name: 'KINXINC-KR', cidr: '1.201.0.0/16', country: 'KR' },
     entities: [
-        { handle: 'MI443-KR', roles: ['technical', 'administrative'], name: 'IP Manager' },
-        { handle: 'IRT-KRNIC-KR', roles: ['abuse'], name: 'IRT-KRNIC-KR' },
+        { handle: 'MI443-KR', roles: ['technical', 'administrative'], name: 'IP Manager', emails: ['noc@kinx.net'] },
+        // KRNIC's incident-response team, returned for EVERY Korean block. Taking `abuse` first
+        // would file the registry's own address as though it belonged to the holder.
+        { handle: 'IRT-KRNIC-KR', roles: ['abuse'], name: 'IRT-KRNIC-KR', emails: ['hostmaster@nic.or.kr'] },
     ],
     source: 'whois.apnic.net',
     nir: {
@@ -78,19 +88,52 @@ function stubCtx(nodes, responses) {
 const plugin = pack.plugins[0];
 const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_address', data: { ip_address: ip, ...data } }];
 
-// --- 1. ARIN: a registrant exists, so the IP gets an organization ------------------------------
+// --- 1. ARIN: netblock, whois record, and the IP filled in ------------------------------------
 {
     const { ctx, created, edges, updates } = stubCtx(
         Object.fromEntries([ipNode('n1', '8.8.8.8')]),
         { '8.8.8.8': ARIN },
     );
     const out = await plugin.run(ctx);
-    assert.deepEqual(created, [{ type: 'infrastructure.netblock', data: { cidr: '8.8.8.0/24', network_name: 'GOGL' } }]);
-    assert.deepEqual(edges, [{ from: 'n1', to: 'new-1', label: 'within netblock' }]);
-    assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'Google LLC' } }]);
-    assert.match(out.summary, /whois\.arin\.net/);
+    assert.deepEqual(created[0], { type: 'infrastructure.netblock', data: { cidr: '8.8.8.0/24', network_name: 'GOGL' } });
     // No country in the ARIN answer, so none is invented.
     assert.equal('country_code' in created[0].data, false);
+
+    const record = created[1];
+    assert.equal(record.type, 'infrastructure.whois_record');
+    assert.equal(record.data.subject, '8.8.8.0/24', 'the record describes the BLOCK, not the address');
+    assert.equal(record.data.registrant, 'Google LLC');
+    assert.equal(record.data.registrar, 'whois.arin.net');
+    assert.equal(record.data.created_at, '2023-12-28T17:24:33-05:00', 'the registration event, not the last change');
+    // Everything without a field of its own survives here, minus the registry's verbatim copy.
+    assert.match(record.data.raw, /DIRECT ALLOCATION/);
+    assert.equal(/"raw"/.test(record.data.raw), false, 'the registry payload is not nested inside itself');
+
+    assert.deepEqual(edges, [
+        { from: 'new-1', to: 'new-2', label: 'has whois' },
+        { from: 'n1', to: 'new-1', label: 'within netblock' },
+    ]);
+    assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'Google LLC', version: 'ipv4' } }]);
+    assert.match(out.summary, /whois\.arin\.net/);
+}
+
+// --- 1b. The contact email prefers the holder's own address over the registry's abuse desk ------
+{
+    const { ctx, created } = stubCtx(Object.fromEntries([ipNode('n1', '8.8.8.8')]), { '8.8.8.8': ARIN });
+    await plugin.run(ctx);
+    // ARIN's registrant carries no address, so the administrative/technical one is taken —
+    // `abuse` is last, because a national registry answers with its own IRT for every block.
+    assert.equal(created[1].data.registrant_email, 'arin-contact@google.com');
+}
+
+// --- 1c. `version` comes from the ADDRESS, so it is filled even on a barren answer -------------
+{
+    const { ctx, updates } = stubCtx(
+        Object.fromEntries([ipNode('n1', '2001:4860:4860::8888')]),
+        { '2001:4860:4860::8888': { query: '2001:4860:4860::8888', network: {}, entities: [], source: null } },
+    );
+    await plugin.run(ctx);
+    assert.deepEqual(updates, [{ id: 'n1', patch: { version: 'ipv6' } }]);
 }
 
 // --- 2. APNIC with no national answer: the role contact must not become the organization -------
@@ -100,7 +143,7 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
         { '1.201.0.1': APNIC_NO_NIR },
     );
     await plugin.run(ctx);
-    assert.deepEqual(updates, [{ id: 'n1', patch: { country_code: 'KR' } }], 'no "IP Manager" organization');
+    assert.deepEqual(updates, [{ id: 'n1', patch: { country_code: 'KR', version: 'ipv4' } }], 'no "IP Manager" organization');
     // The allocation name is not lost — it belongs on the netblock, which is what a netname is.
     assert.equal(created[0].data.network_name, 'KINXINC-KR');
     assert.equal(created[0].data.country_code, 'KR');
@@ -118,7 +161,9 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     const out = await plugin.run(ctx);
     assert.equal(created[0].data.cidr, '1.201.0.0/24', 'the assigned /24, not the mirrored /16');
     assert.equal(created[0].data.network_name, 'KINX');
-    assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'KINX', country_code: 'KR' } }]);
+    assert.deepEqual(updates, [{ id: 'n1', patch: { organization: 'KINX', country_code: 'KR', version: 'ipv4' } }]);
+    // KRNIC's IRT address serves every Korean block; the holder's technical contact is the useful one.
+    assert.equal(created[1].data.registrant_email, 'noc@kinx.net');
     assert.match(out.summary, /KRNIC/, 'the summary says which registry actually answered');
 }
 
@@ -137,7 +182,7 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
         { '8.8.8.8': ARIN },
     );
     await plugin.run(ctx);
-    assert.deepEqual(updates, [], 'organization already set, and nothing else to fill');
+    assert.deepEqual(updates, [{ id: 'n1', patch: { version: 'ipv4' } }], 'organization is left as the analyst wrote it');
 }
 
 // --- 4. One netblock per range, however many IPs land in it -----------------------------------
@@ -147,8 +192,9 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
         { '8.8.8.8': ARIN, '8.8.8.9': { ...ARIN, query: '8.8.8.9' } },
     );
     await plugin.run(ctx);
-    assert.equal(created.length, 1, 'the /24 is created once');
-    assert.equal(edges.length, 2, 'both IPs link to it');
+    assert.equal(created.filter((c) => c.type === 'infrastructure.netblock').length, 1, 'the /24 is created once');
+    assert.equal(created.filter((c) => c.type === 'infrastructure.whois_record').length, 1, 'and so is its record');
+    assert.equal(edges.filter((e) => e.label === 'within netblock').length, 2, 'both IPs link to it');
 }
 
 // --- 5. A 401 stops the run and says why, rather than reporting an empty success ---------------
@@ -188,9 +234,15 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.equal(a.version, b.version);
     assert.deepEqual(a.scopes, b.scopes, 'scopes are what the registry shows and the host grants');
     assert.deepEqual(a.io, b.io, 'io decides which nodes the run dialog offers');
+    assert.deepEqual(
+        a.io.produces.map((p) => p.name).sort(),
+        ['netblock', 'whois_record'],
+        'a produced type the manifest omits gets no icon, colour or label on the canvas',
+    );
+    assert.equal(a.name, 'Vineyard RDAP IP');
     // The registry validates the JSON manifest, so THAT is the copy whose entry must be resolvable.
     assert.deepEqual(a.scopes.services, ['rdap']);
     assert.equal('network' in a.scopes, false, 'a service pack declares no arbitrary egress');
 }
 
-console.log('vineyard-rdap ok: 10 scenarios');
+console.log('vineyard-rdap ok: 13 scenarios');

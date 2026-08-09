@@ -1,4 +1,4 @@
-# Vineyard IP RDAP
+# Vineyard RDAP IP
 
 IP allocation lookup through **Vineyard's own cached RDAP service**, rather than straight to the
 registries.
@@ -7,16 +7,27 @@ registries.
 | --- | --- |
 | Pack | `run.vineyard.pluginpacks.vineyard_rdap` |
 | Consumes | `infrastructure.ip_address` |
-| Produces | `infrastructure.netblock` |
+| Produces | `infrastructure.netblock` · `infrastructure.whois_record` |
 | Scopes | `graph` (read/create/update, edge create) · `services: ["rdap"]` |
 
 ## What it does
 
 For every selected IP Address node it asks Vineyard's RDAP service who holds the range, then:
 
-- creates the owning **Netblock** (CIDR, netname, country) and links the IP to it as
-  `within netblock` — one netblock per range, however many of the selected IPs fall inside it;
-- fills the IP's `organization` and `country_code` **only where they are empty**.
+- creates the owning **Netblock** — `cidr`, `network_name`, `country_code`, `asn` — and links the IP
+  to it as `within netblock`. One netblock per range, however many of the selected IPs fall inside it.
+- creates its **WHOIS Record** (`has whois`), once per range: `registrant`, `registrant_email`,
+  `registrar`, `created_at`, and a `raw` copy of everything else the lookup returned — allocation
+  type, status, every event, the full contact list, the national-registry block. That last field is
+  there because an RDAP answer carries far more than the typed fields have room for, and the parts
+  without a home are often the ones worth reading.
+- fills the IP's `organization`, `country_code`, `asn` and `version` **only where they are empty**.
+
+`version` is decided from the address rather than from the registry — a colon is only ever an IPv6
+separator — so it is filled even on a lookup that returns nothing else.
+
+The `raw` copy deliberately omits the registry's own verbatim payload (`doc.raw`), which is tens of
+kilobytes of the same facts in a shape nobody reads. It is capped at 8,000 characters.
 
 The update is a delta, not a snapshot. Fields this lookup did not produce are not written back, so a
 value an analyst corrected by hand — or another collection filled a moment ago — survives.
@@ -40,9 +51,10 @@ three things:
   returns `network` / `entities` / `events` / `remarks` whichever answered, and says which one did —
   the run summary names it.
 
-## Where `organization` comes from
+## Where `organization` and the contact address come from
 
-In order: the **`registrant`** entity, then the **national registry's** assignee name. Nothing else.
+`organization` is the **`registrant`** entity, then the **national registry's** assignee name.
+Nothing else.
 
 Administrative and technical contacts are people and role mailboxes, not the organisation holding
 the block — APNIC's only contact for `1.201.0.1` is named **"IP Manager"**, and writing that into an
@@ -51,6 +63,12 @@ registry's own statement of who holds the block and outranks everything.
 
 Where neither exists the field is left empty. The allocation name is still recorded, as the
 netblock's `network_name`, which is what a netname is.
+
+`registrant_email` walks the roles registrant → technical → administrative → **abuse last**. Abuse
+is last rather than first because a national registry answers with its own incident-response team —
+KRNIC returns `hostmaster@nic.or.kr` for every Korean block — and recording that as the holder's
+address would be wrong on every KR lookup. The technical contact is the organisation's own:
+`noc@kinx.net` for KINX.
 
 ## The service, and the scope
 
@@ -69,7 +87,7 @@ of the selection on a dead session.
 node verify.mjs
 ```
 
-Ten scenarios against responses the live service actually returned, plus a check that the JSON
+Thirteen scenarios against responses the live service actually returned, plus a check that the JSON
 manifest and the manifest embedded in the bundle still agree — they are two copies of one
 declaration, the registry validates the first and the worker runs the second, so a scope added to
 one and not the other is a pack that passes review and then cannot work.
