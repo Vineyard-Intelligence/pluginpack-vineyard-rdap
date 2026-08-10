@@ -245,7 +245,7 @@ const vineyardRdapIp = {
         version: '1.4.0',
         description: "IP allocation lookup through Vineyard's cached RDAP service.",
         icon: 'boxes',
-        author: { name: 'VINEYARD.RUN', url: 'https://vineyard.run' },
+        author: { name: 'VINEYARD', url: 'https://vineyard.run' },
         license: 'Apache-2.0',
         platforms: { primary: 'web', web: { runtime: 'sandbox-js', entry: 'inline' } },
         io: {

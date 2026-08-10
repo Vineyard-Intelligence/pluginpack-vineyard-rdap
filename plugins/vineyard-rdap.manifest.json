@@ -5,7 +5,7 @@
   "version": "1.4.0",
   "description": "IP allocation lookup through Vineyard's cached RDAP service.",
   "author": {
-    "name": "vineyard-run",
+    "name": "VINEYARD",
     "url": "https://github.com/vineyard-run"
   },
   "license": "Apache-2.0",
