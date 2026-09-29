@@ -137,7 +137,7 @@ const MAX_CONTACTS = 8;
  * incident-response team for every block it serves — KRNIC returns `hostmaster@nic.or.kr` on every
  * Korean lookup, RIPE `abuse@ripe.net` on every European one. Node identity here is type + label, so
  * those are not fifty nodes, they are ONE node that collects an edge from every organisation the
- * case ever touches. After a morning's work the most connected node in the graph is a registry
+ * project ever touches. After a morning's work the most connected node in the graph is a registry
  * mailbox that connects nothing to anything.
  *
  * An entity that ALSO holds a registrant/technical/administrative role is kept: for a block the

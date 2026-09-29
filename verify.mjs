@@ -41,7 +41,7 @@ const APNIC = {
         // KRNIC's incident-response team, returned for EVERY Korean block. Taking `abuse` first
         // would file the registry's own address as though it belonged to the holder — and since node
         // identity is type + label, it is not fifty nodes, it is ONE that collects an edge from every
-        // Korean organisation the case ever touches.
+        // Korean organisation the project ever touches.
         { handle: 'IRT-KRNIC-KR', roles: ['abuse'], name: 'IRT-KRNIC-KR', emails: ['hostmaster@nic.or.kr', 'hostmaster@nic.or.kr'] },
     ],
     source: 'whois.apnic.net',
@@ -305,7 +305,7 @@ const ipNode = (id, ip, data = {}) => [id, { id, type: 'infrastructure.ip_addres
     assert.deepEqual(orgs, ['KINX'], "the national registry names the assignee; APNIC's mirror names a role mailbox");
     // THE POINT OF THE GUARD. Node identity is type + label, so hostmaster@nic.or.kr is not one node
     // per Korean lookup — it is ONE node that would collect an edge from every Korean organisation
-    // in the case. It is KRNIC's incident-response desk and it connects nothing to anything.
+    // in the project. It is KRNIC's incident-response desk and it connects nothing to anything.
     assert.equal(emails.includes('hostmaster@nic.or.kr'), false, "KRNIC's IRT is abuse-only and gets no node");
     assert.deepEqual(emails, ['noc@kinx.net'], 'named once by APNIC and twice by KRNIC, created once');
     assert.deepEqual(phones.sort(), ['+82-2-580-4600', '+82-2-580-4601']);

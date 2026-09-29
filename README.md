@@ -75,7 +75,7 @@ to". The lookup still produces the netblock and the record.
 
 **An entity whose ONLY role is `abuse` gets no node.** Node identity in Vineyard is type + label, so
 `hostmaster@nic.or.kr` is not one node per Korean lookup — it is **one node that collects an edge
-from every Korean organisation in the case**. It is KRNIC's incident-response desk, returned on
+from every Korean organisation in the project**. It is KRNIC's incident-response desk, returned on
 every Korean block, and it connects nothing to anything. RIPE does the same with `abuse@ripe.net`.
 
 The test is the role list, not the address. RIPE NCC holds `193.0.6.0/24` itself, and there
