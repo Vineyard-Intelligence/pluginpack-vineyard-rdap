@@ -242,7 +242,7 @@ const vineyardRdapIp = {
         identifier: 'run.vineyard.plugins.vineyard_rdap_ip',
         content_type: 'vineyard:plugin',
         name: 'Vineyard RDAP IP',
-        version: '1.4.0',
+        version: '1.4.1',
         description: "IP allocation lookup through Vineyard's cached RDAP service.",
         icon: 'boxes',
         author: { name: 'VINEYARD', url: 'https://vineyard.run' },
@@ -469,7 +469,7 @@ export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
     name: 'Vineyard RDAP IP',
-    version: '1.4.0',
+    version: '1.4.1',
     description: "IP allocation lookup through Vineyard's cached RDAP service.",
     plugins: [vineyardRdapIp],
 };
