@@ -242,8 +242,9 @@ const vineyardRdapIp = {
         identifier: 'run.vineyard.plugins.vineyard_rdap_ip',
         content_type: 'vineyard:plugin',
         name: 'Vineyard RDAP IP',
-        version: '1.4.1',
-        description: "IP allocation lookup through Vineyard's cached RDAP service.",
+        version: '1.4.2',
+        description:
+            "Looks up each selected IP Address through Vineyard's RDAP service and creates its Netblock (\"within netblock\"), a WHOIS Record (\"has whois\"), and the holding Organization (\"controls\" the netblock) with its email addresses and phone numbers (\"owns\", up to 8 each). Fills the IP's organization, country_code, asn and version only where empty. Korean and Japanese IPv4 ranges use the KRNIC/JPNIC assignment when available.",
         icon: 'boxes',
         author: { name: 'VINEYARD', url: 'https://vineyard.run' },
         license: 'Apache-2.0',
@@ -469,7 +470,7 @@ export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
     name: 'Vineyard RDAP IP',
-    version: '1.4.1',
-    description: "IP allocation lookup through Vineyard's cached RDAP service.",
+    version: '1.4.2',
+    description: "IP address registration lookups through Vineyard's RDAP service: the covering netblock, a WHOIS record, and the holding organization with its contacts.",
     plugins: [vineyardRdapIp],
 };
