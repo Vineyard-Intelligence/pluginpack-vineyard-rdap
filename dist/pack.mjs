@@ -470,7 +470,7 @@ export default {
     identifier: 'run.vineyard.pluginpacks.vineyard_rdap',
     content_type: 'vineyard:pluginpack',
     name: 'Vineyard RDAP IP',
-    version: '1.4.2',
+    version: '1.4.3',
     description: "IP address registration lookups through Vineyard's RDAP service: the covering netblock, a WHOIS record, and the holding organization with its contacts.",
     plugins: [vineyardRdapIp],
 };
